@@ -27,28 +27,37 @@ Every kit should ship a `README.md`. The structure isn't mandatory, but the exis
 
 For kits that have a corresponding tutorial on [docs.docker.com](https://docs.docker.com/), link to it instead of duplicating the design rationale.
 
+## Network policy: declare every domain
+
+Your kit's `network.allowedDomains` is the **complete** outbound contract — the CI e2e job runs under `deny-all`, so anything you don't list is blocked.
+
+Watch out for package managers: `apt-get update`, `npm install`, `pip install`, etc. each refresh metadata for every configured source, not just yours. For kits built on `shell-docker` / `*-docker` templates that means `download.docker.com` must be in your list even if you only `apt-get install` from Ubuntu's main archive — `apt-get update` fails the install otherwise. List `archive.ubuntu.com`, `security.ubuntu.com`, **and** `ports.ubuntu.com` so the kit works on both amd64 (CI) and arm64 (Apple Silicon).
+
+See [Declare every domain your kit needs](./README.md#declare-every-domain-your-kit-needs) in the README for the probe recipe that surfaces the exact set of domains your install hooks reach for under `deny-all`.
+
 ## Verifying locally
 
 Before opening a PR:
 
 ```console
 $ sbx kit validate ./my-kit/
-$ cd my-kit && go test -v -count=1 -timeout 10m ./...
+$ cd my-kit && ../scripts/test-kit.sh
 $ sbx run --kit ./my-kit/ <agent>
 ```
 
 The first two are what CI runs. The third catches things the TCK doesn't — install scripts hitting unexpected hosts, startup wrappers crashing silently, agents not authenticating.
 
+`scripts/test-kit.sh` resolves the kit directory (default: `$PWD`), sets `KIT` to its absolute path, and runs `go test -run TestKitTCK ./tck/...` against the repo-root `tck` package. Forwards extra flags to `go test`, so `../scripts/test-kit.sh -v -run TestKitTCK/my-kit/validation` works.
+
 For an automated check that the engine actually materialises the kit's content inside a real sandbox (env vars, container files, tmpfs, rendered memory), opt into the e2e layer:
 
 ```console
-$ KIT_UNDER_TEST="$PWD/my-kit" \
-    go test -tags=e2e -v -timeout 25m -count=1 -run TestE2ECreateSandbox ./tck/...
+$ cd my-kit && ../scripts/test-kit-e2e.sh
 ```
 
-`KIT_UNDER_TEST` must be an absolute path — `go test` cd's into the package directory, so a relative path resolves against `./tck/`, not the repo root.
+Or, from the repo root: `./scripts/test-kit-e2e.sh my-kit`. The wrapper checks `sbx` is on PATH and the kit dir has a `spec.yaml`, then runs `go test -tags=e2e -run TestE2ECreateSandbox ./tck/...`.
 
-See [End-to-end (e2e) Tests](./README.md#end-to-end-e2e-tests) in the README for prerequisites and what each subtest verifies.
+See [End-to-end (e2e) Tests](./README.md#end-to-end-e2e-tests) in the README for prerequisites (`sbx login`, default policy, etc.) and what each subtest verifies.
 
 ## Sign-off and signing
 

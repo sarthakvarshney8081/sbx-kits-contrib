@@ -84,11 +84,12 @@ sbx-kits-contrib/
 ```
 my-kit/
 ├── spec.yaml
-├── my_kit_tck_test.go
 └── files/
     └── home/          # Files copied to /home/agent/ in the container
         └── config.json
 ```
+
+There's no per-kit test file to write — the shared `TestKitTCK` in `tck/kit_test.go` reads a `KIT` env var pointing at the kit directory and runs the full TCK suite against it.
 
 2. Write your `spec.yaml`:
 
@@ -121,31 +122,64 @@ commands:
       description: Start my-tool
 ```
 
-3. Write a TCK test file (`my_kit_tck_test.go`):
-
-```go
-package my_kit_test
-
-import (
-    "testing"
-
-    "github.com/docker/sbx-kits-contrib/tck"
-    "github.com/stretchr/testify/require"
-)
-
-func TestMyKitTCK(t *testing.T) {
-    suite, err := tck.NewSuiteFromDir(".")
-    require.NoError(t, err)
-    suite.RunAll(t)
-}
-```
-
-4. Run the TCK locally:
+3. Run the TCK locally — from inside the kit's directory:
 
 ```bash
 cd my-kit
-go test -v -count=1 -timeout 10m ./...
+../scripts/test-kit.sh
 ```
+
+Or from the repo root, naming the kit:
+
+```bash
+./scripts/test-kit.sh my-kit
+```
+
+Extra flags are forwarded to `go test`, so `../scripts/test-kit.sh -v -run …`
+works as expected. If you'd rather invoke `go test` directly, the equivalent is:
+
+```bash
+KIT="$PWD/my-kit" go test -v -count=1 -timeout 10m -run TestKitTCK ./tck/...
+```
+
+`KIT` must be an absolute path because `go test` runs the binary with its
+working directory set to the package directory (`./tck/`).
+
+**Windows users**: the wrapper is a bash script — run it from **Git Bash** (ships with Git for Windows) or **WSL**, not from `cmd.exe` or PowerShell. If you'd rather skip the wrapper, the direct `go test` invocation above works in PowerShell too — just substitute `$env:KIT = "$PWD\my-kit"` for the env-var syntax.
+
+## Declare every domain your kit needs
+
+A kit's `network.allowedDomains` is its **complete** outbound network contract. The CI e2e job runs with a `deny-all` default policy, so anything not in your `allowedDomains` is blocked at request time — and any failed request inside an install hook surfaces as `sbx create` failing.
+
+The non-obvious trap is **package managers refreshing every configured source**, not just the one you added:
+
+- `apt-get update` re-fetches metadata for every file in `/etc/apt/sources.list[.d/]` — including sources the base template added. If *any* of those returns non-2xx, `apt-get` exits non-zero even if the package you want is in a different source. For kits built on `shell-docker` / `*-docker` templates that means `download.docker.com` (Docker's apt repo, pre-added by the template) needs to be in your `allowedDomains` even if you're only installing something from Ubuntu's main archive.
+- Ubuntu hosts amd64 packages on `archive.ubuntu.com` + `security.ubuntu.com` and arm64 packages on `ports.ubuntu.com`. List all three for cross-arch coverage; CI is amd64, your Mac is likely arm64.
+- `npm install`, `pip install`, `cargo`, `go get`, etc. each have their own registry/mirror hosts — declare them too.
+
+If you're not sure what your install hooks reach, probe locally under `deny-all` and read `sbx policy log` to see exactly what the proxy blocked. The recipe is cross-platform (no daemon-log greping, no OS-specific paths):
+
+```bash
+# 1. Switch to the strict baseline. `sbx policy reset` drops any local
+#    rules you've added — if you have customisations, list them first
+#    with `sbx policy ls` so you can restore them later.
+sbx policy reset -f
+sbx policy set-default deny-all
+
+# 2. Run your kit. The install hooks fire during `sbx create`.
+sbx create --name probe-my-kit --kit "$PWD/my-kit" <agent> /tmp/sbx-kit-debug || true
+
+# 3. See what the proxy blocked (and what got through). Filter by the
+#    sandbox name so you only see this kit's requests.
+sbx policy log probe-my-kit
+
+# 4. Clean up the probe sandbox and restore your previous default policy.
+sbx rm -f probe-my-kit
+sbx policy reset -f
+sbx policy set-default balanced   # or whichever preset you were on
+```
+
+Every `Blocked requests` row is a domain your install or startup hook reached for under `deny-all`. Add the host (column `HOST`, e.g. `download.docker.com:443`) to `allowedDomains` and re-probe until the block list is empty.
 
 ## TCK Test Coverage
 
@@ -187,22 +221,31 @@ The default TCK runs every kit assertion against a fabricated `testcontainers-go
 
 ### Running locally
 
-The test is hidden behind the `e2e` build tag so kit authors running `go test ./...` see no behavior change. Opt in explicitly:
+The test is hidden behind the `e2e` build tag so kit authors running `go test ./...` see no behavior change. Opt in via the wrapper:
 
 ```bash
-# From the repo root, pointing at one kit
-KIT_UNDER_TEST="$PWD/code-server" \
+# From inside the kit's directory:
+cd my-kit
+../scripts/test-kit-e2e.sh
+
+# Or from the repo root, naming the kit:
+./scripts/test-kit-e2e.sh my-kit
+```
+
+Extra flags are forwarded to `go test`. The wrapper checks `sbx` is on PATH and validates the kit directory has a `spec.yaml`/`spec.yml` before invoking. If you'd rather drop to `go test` directly:
+
+```bash
+KIT_UNDER_TEST="$PWD/my-kit" \
   go test -tags=e2e -v -timeout 25m -count=1 -run TestE2ECreateSandbox ./tck/...
 ```
 
-`KIT_UNDER_TEST` must be an **absolute path**: `go test` runs each binary with its working directory set to the package directory (`./tck/`), so a relative path resolves against `./tck/`, not the repo root. Prefix with `$PWD` (or use `realpath`) when calling from the repo root.
+`KIT_UNDER_TEST` must be an **absolute path**: `go test` runs each binary with its working directory set to the package directory (`./tck/`), so a relative path resolves against `./tck/`, not the repo root.
 
-To run every kit, use `find` (works in both bash and zsh; raw globs error under zsh's default `nomatch` when no `.yml` kits exist):
+To run every kit locally:
 
 ```bash
 for spec in $(find "$PWD" -mindepth 2 -maxdepth 2 \( -name spec.yaml -o -name spec.yml \)); do
-  KIT_UNDER_TEST="$(dirname "$spec")" \
-    go test -tags=e2e -v -timeout 25m -count=1 -run TestE2ECreateSandbox ./tck/...
+  ./scripts/test-kit-e2e.sh "$(dirname "$spec")"
 done
 ```
 

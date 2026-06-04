@@ -125,18 +125,23 @@ func parseArtifactBytes(data []byte) (*Artifact, error) {
 		return nil, fmt.Errorf("artifact: %w", err)
 	}
 
+	// PublishedPorts is canonical at the top level in v2. normalize has
+	// already promoted any v1 LegacyNetwork.PublishedPorts into
+	// spec.PublishedPorts (with a deprecation warning), so this is a
+	// straight copy. AllowedDomains/DeniedDomains moved to Caps.Network;
+	// ServiceDomains/ServiceAuth moved to Credentials[].ApiKey.Inject.
 	return &Artifact{
-		Manifest:     spec.Manifest,
-		Extends:      spec.Extends,
-		Locked:       spec.Locked,
-		Network:      spec.Network,
-		Credentials:  spec.Credentials,
-		Environment:  spec.Environment,
-		Settings:     spec.Settings,
-		Commands:     spec.Commands,
-		OAuth:        spec.OAuth,
-		AgentContext: spec.AgentContext,
-		Warnings:     w.messages,
+		Manifest:       spec.Manifest,
+		Extends:        spec.Extends,
+		Locked:         spec.Locked,
+		PublishedPorts: spec.PublishedPorts,
+		Caps:           spec.Caps,
+		Credentials:    spec.Credentials.List,
+		Environment:    spec.Environment,
+		Settings:       spec.Settings,
+		Commands:       spec.Commands,
+		AgentContext:   spec.AgentContext,
+		Warnings:       w.messages,
 	}, nil
 }
 

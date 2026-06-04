@@ -3,6 +3,7 @@ package spec
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -19,7 +20,7 @@ func TestLoadFromDirectory(t *testing.T) {
 		require.Equal(t, "1.0.0", a.Manifest.Version)
 		require.Equal(t, "https://example.com/sample-mixin", a.Manifest.SourceURL)
 		require.Empty(t, a.Manifest.Template, "mixins have no template")
-		require.NotNil(t, a.Network)
+		require.NotEmpty(t, a.PublishedPorts)
 		require.NotNil(t, a.Credentials)
 		require.NotNil(t, a.Environment)
 		require.NotNil(t, a.Settings)
@@ -40,6 +41,61 @@ func TestLoadFromDirectory(t *testing.T) {
 		require.Equal(t, []string{"--verbose", "--task-mode"}, a.Manifest.RunOptions)
 		require.Equal(t, "SAMPLE.md", a.Manifest.AIFilename)
 		require.NotEmpty(t, a.AgentContext)
+
+		// v1 network.publishedPorts is promoted to the canonical top-level
+		// PublishedPorts with a deprecation warning steering authors to the
+		// v2 spelling (sample-agent-v2 shows the canonical form).
+		require.Equal(t, []PublishedPort{{Container: 8080, Protocol: "tcp", Name: "web"}}, a.PublishedPorts)
+		var sawPortWarning bool
+		for _, w := range a.Warnings {
+			if strings.Contains(w, "network.publishedPorts") {
+				sawPortWarning = true
+			}
+		}
+		require.True(t, sawPortWarning, "v1 network.publishedPorts must warn; got %v", a.Warnings)
+	})
+
+	t.Run("sample-agent-v2", func(t *testing.T) {
+		// Canonical schemaVersion 2 reference kit: exercises the full v2
+		// surface and must load with ZERO deprecation warnings.
+		a, err := LoadFromDirectory("testdata/sample-agent-v2")
+		require.NoError(t, err)
+		require.Empty(t, a.Warnings, "canonical v2 kit must not emit deprecation warnings")
+
+		require.Equal(t, "sample-agent-v2", a.Manifest.Name)
+		require.Equal(t, KindSandbox, a.Manifest.Kind)
+		require.Equal(t, "2.0.0", a.Manifest.Version)
+		require.Equal(t, "https://example.com/sample-agent-v2", a.Manifest.SourceURL)
+		require.Equal(t, "docker/sandbox-templates:shell-docker", a.Manifest.Template)
+		require.Equal(t, []string{"sandbox.image"}, a.Locked)
+
+		// Top-level publishedPorts (the v2 home): minimal, full-tcp, and udp forms.
+		require.Equal(t, []PublishedPort{
+			{Container: 9418},
+			{Container: 8080, Protocol: "tcp", Name: "web"},
+			{Container: 53, Protocol: "udp", Name: "dns"},
+		}, a.PublishedPorts)
+
+		// Egress under caps.network (not the removed network block).
+		require.NotNil(t, a.Caps)
+		require.NotNil(t, a.Caps.Network)
+		require.ElementsMatch(t, []string{"api.anthropic.com", "api.openai.com:443", "*.example.com"}, a.Caps.Network.Allow)
+		require.ElementsMatch(t, []string{"telemetry.example.com"}, a.Caps.Network.Deny)
+
+		// Unified credentials[].
+		require.Len(t, a.Credentials, 3)
+		var services []string
+		for _, c := range a.Credentials {
+			services = append(services, c.Service)
+		}
+		require.ElementsMatch(t, []string{"anthropic", "github", "workos"}, services)
+
+		require.Len(t, a.Manifest.Volumes, 2)
+		require.NotNil(t, a.Commands)
+		require.NotEmpty(t, a.Commands.Startup)
+		require.NotEmpty(t, a.Commands.InitFiles)
+		require.NotEmpty(t, a.AgentContext)
+		require.NotEmpty(t, a.Files, "v2 reference kit ships static files")
 	})
 
 	t.Run("missing_directory", func(t *testing.T) {
@@ -100,49 +156,6 @@ description: "loaded from spec.yml"
 	a, err := LoadFromDirectory(dir)
 	require.NoError(t, err)
 	require.Equal(t, "yml-kit", a.Manifest.Name)
-}
-
-func TestLoadFromFS_NetworkPublishedPorts(t *testing.T) {
-	// YAML round-trip for the new network.publishedPorts field: the
-	// minimal form (just container) and the full form (container +
-	// protocol + name) must both parse, defaulting protocol at use-site
-	// rather than at decode-time (the spec keeps zero values).
-	fsys := fstest.MapFS{
-		"port-kit/spec.yaml": &fstest.MapFile{
-			Data: []byte(`schemaVersion: "1"
-kind: mixin
-name: port-kit
-displayName: Port Kit
-description: "exercises network.publishedPorts"
-network:
-  publishedPorts:
-    - container: 9418
-    - container: 8080
-      protocol: tcp
-      name: web
-    - container: 53
-      protocol: udp
-      name: dns
-`),
-		},
-	}
-
-	a, err := LoadFromFS(fsys, "port-kit")
-	require.NoError(t, err)
-	require.NotNil(t, a.Network)
-	require.Len(t, a.Network.PublishedPorts, 3)
-
-	require.Equal(t, 9418, a.Network.PublishedPorts[0].Container)
-	require.Empty(t, a.Network.PublishedPorts[0].Protocol, "minimal form leaves protocol empty; consumers default it")
-	require.Empty(t, a.Network.PublishedPorts[0].Name)
-
-	require.Equal(t, 8080, a.Network.PublishedPorts[1].Container)
-	require.Equal(t, "tcp", a.Network.PublishedPorts[1].Protocol)
-	require.Equal(t, "web", a.Network.PublishedPorts[1].Name)
-
-	require.Equal(t, 53, a.Network.PublishedPorts[2].Container)
-	require.Equal(t, "udp", a.Network.PublishedPorts[2].Protocol)
-	require.Equal(t, "dns", a.Network.PublishedPorts[2].Name)
 }
 
 func TestParseArtifact_NoSpecFile(t *testing.T) {

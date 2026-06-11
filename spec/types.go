@@ -9,6 +9,7 @@ package spec
 
 import (
 	"fmt"
+	"sort"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -289,9 +290,39 @@ type Credential struct {
 	ApiKey *ApiKey `json:"apiKey,omitempty" yaml:"apiKey,omitempty"`
 
 	// OAuth describes the OAuth-shaped half of this credential, if any.
-	// A credential can declare both ApiKey and OAuth; the resolver's
-	// precedence rule (OAuth wins when both have host material) picks one.
+	// A credential can declare both ApiKey and OAuth; when both resolve at
+	// runtime the API key takes precedence (per-VM key over the OAuth token).
 	OAuth *OAuth `json:"oauth,omitempty" yaml:"oauth,omitempty"`
+}
+
+// RoutingHosts returns every host the proxy must route to this credential's
+// service: apiKey injection domains, the OAuth token-refresh endpoint, and
+// OAuth resource hosts. Deduplicated and sorted for deterministic output.
+// This is the full routing set; it is NOT the binding-gate set (the gate uses
+// apiKey injection domains only).
+func (c Credential) RoutingHosts() []string {
+	seen := map[string]bool{}
+	var hosts []string
+	add := func(h string) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		hosts = append(hosts, h)
+	}
+	if c.ApiKey != nil {
+		for _, inj := range c.ApiKey.Inject {
+			add(inj.Domain)
+		}
+	}
+	if c.OAuth != nil {
+		add(c.OAuth.TokenEndpoint.Host)
+		for _, h := range c.OAuth.ResourceHosts {
+			add(h)
+		}
+	}
+	sort.Strings(hosts)
+	return hosts
 }
 
 // ApiKey describes an api-key-shaped credential. Inject is the fan-out
@@ -371,12 +402,12 @@ type EnvironmentPolicy struct {
 	// Variables are static environment variables to set in the container.
 	Variables map[string]string `json:"variables,omitempty" yaml:"variables,omitempty"`
 
-	// LegacyProxyManaged absorbs the v1 `environment.proxyManaged` list.
+	// ProxyManaged absorbs the v1 `environment.proxyManaged` list.
 	// The normalize step folds each entry into the matching
 	// Credentials[].ApiKey.Name (by service lookup against
 	// LegacyNetwork.ServiceAuth) and emits a deprecation warning.
 	// Removed in the Phase 6 schema cutover.
-	LegacyProxyManaged []string `json:"-" yaml:"proxyManaged,omitempty"`
+	ProxyManaged []string `json:"-" yaml:"proxyManaged,omitempty"`
 }
 
 // SettingsPolicy defines container settings that control agent-specific
@@ -548,7 +579,14 @@ type OAuthPolicy struct {
 // version, existing kits using only `passthrough: true` would have to add
 // the reason.
 type OAuth struct {
-	TokenEndpoint  OAuthTokenEndpoint   `json:"tokenEndpoint" yaml:"tokenEndpoint"`
+	TokenEndpoint OAuthTokenEndpoint `json:"tokenEndpoint" yaml:"tokenEndpoint"`
+	// ResourceHosts are the API hosts where the OAuth access-token bearer is
+	// used (e.g. "aiplatform.googleapis.com"). The proxy routes these hosts to
+	// this service and substitutes the sentinel bearer for the real token.
+	// Distinct from TokenEndpoint.Host (where the token is refreshed). Domains
+	// only — the bearer header is uniform (Authorization: Bearer) and supplied
+	// by the OAuth engine, not per-host config.
+	ResourceHosts  []string             `json:"resourceHosts,omitempty" yaml:"resourceHosts,omitempty"`
 	Sentinels      OAuthSentinels       `json:"sentinels" yaml:"sentinels"`
 	CredentialFile *OAuthCredentialFile `json:"credentialFile,omitempty" yaml:"credentialFile,omitempty"`
 	SkipIfEnv      []string             `json:"skipIfEnv,omitempty" yaml:"skipIfEnv,omitempty"`
@@ -653,7 +691,7 @@ type specFile struct {
 	// Credentials is the polymorphic-decode wrapper handling both v1
 	// (mapping with sources:) and v2 (sequence of Credential) shapes.
 	// normalizeLegacyCredentials folds the v1 surface plus the
-	// LegacyNetwork / LegacyOAuth / Environment.LegacyProxyManaged
+	// LegacyNetwork / LegacyOAuth / Environment.ProxyManaged
 	// shims into Artifact.Credentials.
 	Credentials credentialsField `yaml:"credentials,omitempty"`
 	// PublishedPorts is the v2 canonical top-level `publishedPorts:` list.

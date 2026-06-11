@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -300,7 +301,7 @@ func (s *specFile) normalizeEgress() error {
 
 // normalizeLegacyCredentials folds the four v1 credential surfaces
 // (Credentials.LegacySources, LegacyNetwork.ServiceAuth,
-// LegacyNetwork.ServiceDomains, Environment.LegacyProxyManaged) into a
+// LegacyNetwork.ServiceDomains, Environment.ProxyManaged) into a
 // single canonical Credentials.List per service. Emits one deprecation
 // warning per legacy surface touched. v2 entries already present in
 // Credentials.List take precedence — a v2 entry for a given service
@@ -400,7 +401,7 @@ func (s *specFile) normalizeLegacyCredentials(w *warnings) error {
 	// proxyManaged: [ANTHROPIC_API_KEY], the matching service is whatever
 	// LegacySources or serviceAuth maps that env-var to). If we can't
 	// derive the service from existing data, fall back to deriveServiceKey.
-	if s.Environment != nil && len(s.Environment.LegacyProxyManaged) > 0 {
+	if s.Environment != nil && len(s.Environment.ProxyManaged) > 0 {
 		sawProxyManaged = true
 		// Build env-var -> service lookup from LegacySources first.
 		envToService := make(map[string]string)
@@ -409,7 +410,7 @@ func (s *specFile) normalizeLegacyCredentials(w *warnings) error {
 				envToService[e] = svc
 			}
 		}
-		for _, envName := range s.Environment.LegacyProxyManaged {
+		for _, envName := range s.Environment.ProxyManaged {
 			svc, ok := envToService[envName]
 			if !ok {
 				svc = deriveServiceKey(envName)
@@ -485,8 +486,30 @@ func (s *specFile) normalizeLegacyOAuthBlock(w *warnings) error {
 	// Attach to existing Credential if present.
 	for i, c := range s.Credentials.List {
 		if c.Service == o.Service {
+			// A routing-only apiKey (from the v1 serviceDomains fold for an
+			// OAuth-only service) is really OAuth routing: move its domains to
+			// resourceHosts (excluding the token endpoint, already declared)
+			// and drop the fake apiKey.
+			if isRoutingOnlyApiKey(c.ApiKey) {
+				for _, inj := range c.ApiKey.Inject {
+					if inj.Domain == "" || inj.Domain == v2.TokenEndpoint.Host {
+						continue
+					}
+					v2.ResourceHosts = append(v2.ResourceHosts, inj.Domain)
+				}
+				s.Credentials.List[i].ApiKey = nil
+			}
+			// Deterministic order, independent of the upstream inject order.
+			sort.Strings(v2.ResourceHosts)
 			if c.OAuth == nil {
 				s.Credentials.List[i].OAuth = v2
+			} else {
+				// An OAuth block is already present; merge the moved resource
+				// hosts into it so routing is never lost.
+				target := s.Credentials.List[i].OAuth
+				target.ResourceHosts = append(target.ResourceHosts, v2.ResourceHosts...)
+				sort.Strings(target.ResourceHosts)
+				target.ResourceHosts = slices.Compact(target.ResourceHosts)
 			}
 			w.deprecate("oauth: (standalone block)", "use credentials[].oauth (kit-spec v2)")
 			return nil
@@ -529,6 +552,23 @@ func (s *specFile) normalizeCapsNetwork(w *warnings) error {
 	}
 
 	return nil
+}
+
+// isRoutingOnlyApiKey reports an apiKey that carries only routing domains —
+// no env-var name and no injection header on any entry. This is the shape the
+// v1 serviceDomains→inject fold produces for an OAuth-only service: it is not
+// an API key, just routing that needs a home. Such entries are moved onto the
+// OAuth block (resourceHosts) when the oauth fold runs.
+func isRoutingOnlyApiKey(a *ApiKey) bool {
+	if a == nil || a.Name != "" {
+		return false
+	}
+	for _, inj := range a.Inject {
+		if inj.Header != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // sortStrings is a small helper to keep the slice sort import local.

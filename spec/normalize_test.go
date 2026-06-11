@@ -125,6 +125,140 @@ func TestNormalizeEgress(t *testing.T) {
 	})
 }
 
+func TestNormalize_OAuthOnlyService_DomainsMoveToResourceHosts(t *testing.T) {
+	yaml := []byte(`
+schemaVersion: "1"
+kind: agent
+name: vertex-test
+agent:
+  image: x
+network:
+  serviceDomains:
+    aiplatform.googleapis.com: vertex
+    europe-west4-aiplatform.googleapis.com: vertex
+    oauth2.googleapis.com: vertex
+oauth:
+  service: vertex
+  tokenEndpoint:
+    host: oauth2.googleapis.com
+    path: /token
+  sentinels:
+    accessToken: a-sentinel
+    refreshToken: r-sentinel
+`)
+	art, err := LoadFromBytes(yaml)
+	require.NoError(t, err)
+
+	var vertex *Credential
+	for i := range art.Credentials {
+		if art.Credentials[i].Service == "vertex" {
+			vertex = &art.Credentials[i]
+		}
+	}
+	require.NotNil(t, vertex, "vertex credential should exist")
+	require.Nil(t, vertex.ApiKey, "degenerate apiKey must be dropped for an oauth-only service")
+	require.NotNil(t, vertex.OAuth)
+	require.Equal(t, []string{"aiplatform.googleapis.com", "europe-west4-aiplatform.googleapis.com"}, vertex.OAuth.ResourceHosts,
+		"resource hosts moved + sorted; token endpoint NOT included")
+	require.Equal(t, "oauth2.googleapis.com", vertex.OAuth.TokenEndpoint.Host)
+}
+
+func TestNormalize_BothMechanisms_KeepsApiKey(t *testing.T) {
+	yaml := []byte(`
+schemaVersion: "1"
+kind: agent
+name: anthropic-test
+agent:
+  image: x
+credentials:
+  sources:
+    anthropic: {env: [ANTHROPIC_API_KEY]}
+network:
+  serviceDomains:
+    api.anthropic.com: anthropic
+  serviceAuth:
+    anthropic: {headerName: x-api-key, valueFormat: "%s"}
+oauth:
+  service: anthropic
+  tokenEndpoint: {host: platform.claude.com, path: /v1/oauth/token}
+  sentinels: {accessToken: a, refreshToken: r}
+`)
+	art, err := LoadFromBytes(yaml)
+	require.NoError(t, err)
+	var c *Credential
+	for i := range art.Credentials {
+		if art.Credentials[i].Service == "anthropic" {
+			c = &art.Credentials[i]
+		}
+	}
+	require.NotNil(t, c)
+	require.NotNil(t, c.ApiKey, "real apiKey (has env name + header) must be kept")
+	require.Equal(t, "ANTHROPIC_API_KEY", c.ApiKey.Name)
+	require.NotNil(t, c.OAuth)
+	require.Empty(t, c.OAuth.ResourceHosts, "shared hosts stay in apiKey.inject; not duplicated")
+}
+
+// TestNormalize_OAuthMerge_SortsAndDedupes exercises the else-branch in
+// normalizeLegacyOAuthBlock where c.OAuth != nil. It verifies that when a
+// Credential already has an OAuth block with resourceHosts PLUS a routing-only
+// apiKey, and a v1 standalone oauth: block is folded in, the domains from the
+// apiKey are moved to resourceHosts and the final list is sorted and deduped.
+func TestNormalize_OAuthMerge_SortsAndDedupes(t *testing.T) {
+	yaml := []byte(`
+schemaVersion: "1"
+kind: agent
+name: merge-test
+agent:
+  image: x
+# v2 credential with existing OAuth resourceHosts AND a routing-only apiKey
+# (no name, no header on inject entries = routing only).
+credentials:
+  - service: vertex
+    apiKey:
+      inject:
+        - domain: new.googleapis.com
+        - domain: aaa-first.googleapis.com
+        - domain: existing.googleapis.com
+    oauth:
+      resourceHosts:
+        - existing.googleapis.com
+        - zzz-last.googleapis.com
+      tokenEndpoint:
+        host: oauth2.googleapis.com
+        path: /token
+      sentinels:
+        accessToken: a
+        refreshToken: r
+# v1 standalone oauth block for same service triggers the merge branch
+oauth:
+  service: vertex
+  tokenEndpoint:
+    host: oauth2.googleapis.com
+    path: /token
+  sentinels:
+    accessToken: a-sentinel
+    refreshToken: r-sentinel
+`)
+	art, err := LoadFromBytes(yaml)
+	require.NoError(t, err)
+
+	var vertex *Credential
+	for i := range art.Credentials {
+		if art.Credentials[i].Service == "vertex" {
+			vertex = &art.Credentials[i]
+		}
+	}
+	require.NotNil(t, vertex, "vertex credential should exist")
+	require.Nil(t, vertex.ApiKey, "routing-only apiKey must be dropped after merge")
+	require.NotNil(t, vertex.OAuth)
+	// Expect sorted + deduped: aaa-first, existing (deduped), new, zzz-last
+	// The token endpoint (oauth2.googleapis.com) is excluded from the move.
+	require.Equal(t,
+		[]string{"aaa-first.googleapis.com", "existing.googleapis.com", "new.googleapis.com", "zzz-last.googleapis.com"},
+		vertex.OAuth.ResourceHosts,
+		"merged resourceHosts should be sorted and deduped")
+}
+
 func TestDeriveServiceKey(t *testing.T) {
 	tests := []struct {
 		input    string

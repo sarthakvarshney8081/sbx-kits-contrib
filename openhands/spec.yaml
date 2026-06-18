@@ -84,14 +84,11 @@ commands:
         const env = { ...process.env };
         for (const k of Object.keys(env)) {
             if (k.toLowerCase().includes('proxy') && env[k]) {
-                env[k] = env[k].replace(/\[[a-fA-F0-9:]+\]/g, '127.0.0.1');
+                env[k] = env[k].replace(/\[.*?\]/g, '127.0.0.1');
             }
         }
         const p = spawn('/usr/local/share/npm-global/bin/agent-canvas', process.argv.slice(2), { stdio: 'inherit', env });
-        p.on('exit', (code, signal) => {
-            if (signal) process.kill(process.pid, signal);
-            process.exit(code ?? 0);
-        });
+        p.on('exit', c => process.exit(c || 0));
         EOF
         chmod +x /usr/local/bin/agent-canvas-wrapper
       user: "0"

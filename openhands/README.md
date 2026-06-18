@@ -44,7 +44,7 @@ $ sbx run --kit ./openhands openhands
 
 ### Accessing the Web UI
 
-Because OpenHands provides a web-based Agent Canvas, you must expose its internal port (8000) to your host machine. Once the sandbox has started and you see the `Agent Canvas + Automation Stack` running, open a **new terminal tab** and run:
+Because OpenHands provides a web-based Agent Canvas, you must expose its internal port (8000) to your host machine. Once the sandbox has started and Agent Canvas is listening on port 8000, open a **new terminal tab** and run:
 
 ```console
 $ sbx ports openhands-sbx-kits-contrib --publish 8000:8000
@@ -72,4 +72,26 @@ On first sandbox creation, the kit runs the required node update command to upgr
 ```console
 $ sbx secret rm -g --host api.anthropic.com
 $ sbx secret rm -g --host api.openai.com
+```
+
+## Troubleshooting
+
+### Port already in use
+
+If port 8000 is already occupied:
+
+```console
+$ sbx ports openhands-sbx-kits-contrib --publish 8080:8000
+```
+
+Then access:
+
+[http://localhost:8080](http://localhost:8080)
+
+### Missing API key
+
+Verify stored secrets:
+
+```console
+$ sbx secret list -g
 ```

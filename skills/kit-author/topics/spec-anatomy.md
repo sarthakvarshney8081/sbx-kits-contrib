@@ -49,7 +49,7 @@ Optional SPDX license list. Non-empty list of strings if present. Implementation
 
 ### `mixins`
 
-Multi-parent composition for `kind: sandbox` kits. The `mixins:` field itself is only valid on sandbox kits — a mixin cannot declare `mixins:`. A mixin *can* use `extends:` for single-parent inheritance (e.g. a Claude-specific mixin that `extends: claude` to inherit the base agent's config).
+Multi-parent composition for `kind: sandbox` kits. Only valid for sandbox kits — mixins themselves cannot use `mixins:` (or `extends:`). The `extends` prohibition is enforced for `schemaVersion "2"` mixins; a `schemaVersion "1"` mixin that predates the rule still validates (backwards compatibility). To derive from a parent agent, use a `kind: sandbox` kit with `extends`.
 
 ```yaml
 mixins:

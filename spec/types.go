@@ -25,8 +25,10 @@ const SchemaVersion = "1"
 
 // SupportedSchemaVersions enumerates every schemaVersion value the
 // loader accepts. "1" is the legacy shape (the current default); "2"
-// opts the kit into the v2 OCI artifact format at distribution time —
-// the spec fields themselves are unchanged across the two versions.
+// opts the kit into the v2 OCI artifact format at distribution time.
+// The set of decodable fields is the same across both versions, but
+// "2" additionally carries the v2 validation rules — currently that a
+// mixin must not set extends (ValidateArtifact); v1 kits are exempt.
 //
 // New entries should be appended (never reordered) so existing kits
 // continue to validate.
@@ -97,8 +99,18 @@ type Manifest struct {
 	// AIFilename is the AI profile markdown filename (e.g., "CLAUDE.md").
 	AIFilename string `json:"aiFilename,omitempty" yaml:"aiFilename,omitempty"`
 
-	// RunOptions are CLI arguments passed to the agent binary at startup.
+	// RunOptions are CLI arguments passed to the agent binary in
+	// detached/default mode (the baked start script). In v2 this is
+	// entrypoint[1:] plus sandbox.command.default.
 	RunOptions []string `json:"runOptions,omitempty" yaml:"runOptions,omitempty"`
+
+	// InteractiveOptions are CLI arguments passed to the agent binary when a
+	// TTY/interactive session is attached, in place of RunOptions. In v2 this
+	// is entrypoint[1:] plus sandbox.command.interactive (falling back to
+	// sandbox.command.default when interactive is unset). Empty for v1 kits
+	// and for v2 kits with no command distinction; callers on the interactive
+	// attach path fall back to RunOptions when this is empty.
+	InteractiveOptions []string `json:"interactiveOptions,omitempty" yaml:"interactiveOptions,omitempty"`
 
 	// Resources optionally constrains container CPU, memory, and GPU.
 	Resources *Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
@@ -254,7 +266,7 @@ type NetworkPolicy struct {
 
 	// PublishedPorts is the v1 location for declared ports
 	// (`network.publishedPorts`). In v2 this moved to the top-level
-	// `publishedPorts:` field; normalize promotes this shim there with a
+	// `ports:` field; normalize promotes this shim there with a
 	// deprecation warning. Retained only so v1 spec.yaml still decodes
 	// under strict (KnownFields) decoding. Removed in the Phase 6 cutover.
 	//
@@ -396,6 +408,16 @@ type ApiKeyInject struct {
 	// as the password. Used by the github kit for git HTTPS clone
 	// (`x-access-token` as the literal username).
 	Username string `json:"username,omitempty" yaml:"username,omitempty"`
+
+	// Scheme is a v2-only decode-time sugar that selects the header
+	// encoding without spelling out Format: "bearer" expands to
+	// Format "Bearer %s"; "basic" marks the entry as HTTP Basic Auth
+	// (username-driven). normalizeV2 expands Scheme into Format/Username
+	// and clears it, so the canonical Artifact never carries a scheme —
+	// consumers read Format/Username exactly as before. Mutually
+	// exclusive with a raw Format (validated at load). Always empty on a
+	// normalized Artifact.
+	Scheme string `json:"-" yaml:"scheme,omitempty"`
 }
 
 // CredentialSource defines how to discover a credential for a specific service.
@@ -443,6 +465,26 @@ type Caps struct {
 type CapsNetwork struct {
 	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 	Deny  []string `json:"deny,omitempty" yaml:"deny,omitempty"`
+}
+
+// Requires declares composition preconditions for a kit. Today it carries
+// only base-agent affinity — the base agent a mixin is designed to layer onto.
+// Env vars, credentials, and settings a mixin injects are often agent-specific
+// (e.g. Claude Code's ANTHROPIC_* variables mean nothing to a codex sandbox),
+// so a mixin can pin the base agent it makes sense on.
+//
+// The spec library validates only well-formedness; enforcement — rejecting a
+// mixin applied to a non-matching base agent — lives in the consumer that
+// performs composition, alongside Locked and Licenses.
+type Requires struct {
+	// Agent is the base-agent name this kit is designed for. When set,
+	// composing the kit onto a different base agent is a composition error.
+	// Absent or empty means the kit declares no affinity and layers onto any
+	// base agent. A single agent, not a set: affinity exists to prevent
+	// misapplication, and an "any of these" set would defeat that guarantee.
+	// Broader family matching (claude and its claude-* variants) is left to
+	// the consumer's extends-lineage check, not an explicit list.
+	Agent string `json:"agent,omitempty" yaml:"agent,omitempty"`
 }
 
 // EnvironmentPolicy defines environment variables to set in the container.
@@ -589,6 +631,11 @@ type Artifact struct {
 	// mixin composition is not wired in this release — the field has no
 	// runtime effect yet (a load-time warning fires when it is used).
 	Mixins []string `json:"mixins,omitempty"`
+
+	// Requires declares composition preconditions — currently base-agent
+	// affinity (see Requires). The spec library validates well-formedness;
+	// enforcement lives in the consumer that performs composition.
+	Requires *Requires `json:"requires,omitempty"`
 
 	// Locked lists dotted YAML paths (e.g. "agent.image") on this artifact
 	// that child kits must not override during single-parent inheritance.
@@ -772,6 +819,7 @@ type SpecFile struct {
 	Volumes  volumesField  `yaml:"volumes,omitempty"`
 	Extends  string        `yaml:"extends,omitempty"`
 	Mixins   []string      `yaml:"mixins,omitempty"`
+	Requires *Requires     `yaml:"requires,omitempty"`
 	Locked   []string      `yaml:"locked,omitempty"`
 	Licenses []string      `yaml:"licenses,omitempty"`
 	Sandbox  *sandboxBlock `yaml:"sandbox,omitempty"`
@@ -787,7 +835,8 @@ type SpecFile struct {
 	// LegacyNetwork / LegacyOAuth / Environment.ProxyManaged
 	// shims into Artifact.Credentials.
 	Credentials credentialsField `yaml:"credentials,omitempty"`
-	// PublishedPorts is the v2 canonical top-level `publishedPorts:` list.
+	// PublishedPorts is the v1 top-level `publishedPorts:` list (the v2
+	// grammar spells this key `ports` in the separate specFileV2 decoder).
 	// Decoded directly from YAML; normalize also promotes the v1
 	// LegacyNetwork.PublishedPorts shim into this slice.
 	PublishedPorts []PublishedPort `yaml:"publishedPorts,omitempty"`

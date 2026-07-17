@@ -213,7 +213,7 @@ func (s *SpecFile) normalizePublishedPorts(w *warnings) {
 	}
 	s.PublishedPorts = append(s.PublishedPorts, s.LegacyNetwork.PublishedPorts...)
 	s.LegacyNetwork.PublishedPorts = nil
-	w.deprecate("network.publishedPorts", "use the top-level 'publishedPorts' field instead (kit-spec v2)")
+	w.deprecate("network.publishedPorts", "use the top-level 'ports' field instead (kit-spec v2)")
 }
 
 // normalizeKind maps the v1 `kind: agent` value to `sandbox`. The v2 value
@@ -287,7 +287,12 @@ func (s *SpecFile) normalizeSandbox(w *warnings) error {
 	}
 
 	if s.Sandbox == nil {
-		if isSandbox {
+		// A sandbox kit that extends a parent inherits the parent's image
+		// through the extends chain, so it need not declare its own
+		// sandbox.image — the image requirement is satisfied on the resolved
+		// artifact, not on the leaf. A sandbox kit without extends must still
+		// supply an image source.
+		if isSandbox && s.Extends == "" {
 			return fmt.Errorf("kind %q requires a 'sandbox:' block with at least 'sandbox.image'", KindSandbox)
 		}
 		return nil

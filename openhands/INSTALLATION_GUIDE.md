@@ -17,7 +17,7 @@ Docker Sandbox provides a secure, containerized environment to run OpenHands wit
 Before you begin, ensure you have:
 
 1. **Docker Sandbox CLI (`sbx`)** installed on your machine
-   - [Installation instructions](https://docs.docker.com/sandbox/)
+   - [Installation instructions](https://docs.docker.com/ai/sandboxes/)
 
 2. **An API key** for your preferred LLM provider:
    - **Anthropic Claude** - Get key from [console.anthropic.com](https://console.anthropic.com)

@@ -271,7 +271,7 @@ sbx run --kit ./openhands \
 ## Next Steps
 
 - Read the [OpenHands Documentation](https://docs.openhands.dev/)
-- Explore [sbx Documentation](https://docs.docker.com/sandbox/)
+- Explore [sbx Documentation](https://docs.docker.com/ai/sandboxes/)
 - Check out other [sbx kits](https://github.com/docker/sbx-kits-contrib)
 
 ---
